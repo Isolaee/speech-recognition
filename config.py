@@ -30,6 +30,7 @@ class STTConfig(BaseModel):
 class TTSConfig(BaseModel):
     backend: str = "piper"
     voice: str = "en_US-lessac-medium"
+    voice_model_path: str = "models/en_US-lessac-medium.onnx"
     rate: float = 1.0
     volume: float = 1.0
 
