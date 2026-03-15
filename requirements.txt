@@ -1,0 +1,30 @@
+# Core audio
+sounddevice>=0.4.6
+numpy>=1.24.0
+
+# Voice Activity Detection
+silero-vad>=4.0.0        # VAD (torch-based)
+
+# STT
+faster-whisper>=1.0.0    # fast CPU/GPU whisper
+
+# TTS
+piper-tts>=1.2.0         # offline neural TTS (ONNX-based)
+
+# LLM backends
+ollama>=0.3.0            # Ollama Python SDK
+anthropic>=0.30.0        # Claude API SDK
+
+# Tools
+duckduckgo-search>=6.0.0 # web search
+httpx>=0.27.0            # HTTP client
+beautifulsoup4>=4.12.0   # web scraping
+simpleeval>=0.9.13       # safe math expression evaluator
+psutil>=5.9.0            # system info
+
+# Utilities
+pyyaml>=6.0.1            # config and skill YAML
+pydantic>=2.0.0          # typed configs
+python-dotenv>=1.0.0     # .env file support
+rich>=13.0.0             # pretty terminal output
+torch>=2.0.0             # required by silero-vad

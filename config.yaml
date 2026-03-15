@@ -1,0 +1,54 @@
+# LLM settings
+ollama:
+  base_url: "http://localhost:11434"
+  model: "llama3.1:8b"
+  temperature: 0.7
+  context_window: 8192
+
+claude:
+  model: "claude-sonnet-4-6"
+  api_key_env: "ANTHROPIC_API_KEY"
+  temperature: 0.7
+  max_tokens: 4096
+
+# Voice settings
+stt:
+  backend: "faster_whisper"
+  model_size: "base"               # tiny | base | small | medium | large-v3
+  language: "en"
+  device: "cpu"                    # "cpu" | "cuda"
+
+tts:
+  backend: "piper"
+  voice: "en_US-lessac-medium"
+  rate: 1.0
+  volume: 1.0
+
+vad:
+  threshold: 0.5
+  silence_duration_ms: 800
+
+# Agent settings
+agent:
+  active_skill: "default"
+  history_max_turns: 20
+  tool_timeout_seconds: 15
+  speak_while_streaming: true      # TTS sentence by sentence as LLM streams
+
+# Escalation settings
+escalation:
+  enabled: true
+
+# Tool settings
+tools:
+  ollama_enabled:
+    - web_search
+    - file_ops
+    - time_weather
+    - calculator
+    - system_info
+    - escalate_to_claude
+  claude_enabled:
+    - code_executor
+    - web_scraper
+    - api_caller
