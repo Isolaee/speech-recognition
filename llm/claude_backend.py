@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import os
+from typing import TYPE_CHECKING
 
 import anthropic
 
@@ -6,53 +9,62 @@ from config import ClaudeConfig
 from llm.base import LLMBackend, LLMResponse, ToolCall
 from utils.logger import get_logger
 
+if TYPE_CHECKING:
+    from agent.tool_executor import ToolExecutor
+
 logger = get_logger(__name__)
 
 
 class ClaudeBackend(LLMBackend):
-    def __init__(self, config: ClaudeConfig):
+    def __init__(self, config: ClaudeConfig, tool_executor: ToolExecutor | None = None):
         self.config = config
+        self.tool_executor = tool_executor
         api_key = os.environ.get(config.api_key_env)
         self.client = anthropic.Anthropic(api_key=api_key)
 
     def chat(self, messages: list[dict], tools: list[dict], system: str = "") -> LLMResponse:
         anthropic_tools = [self._convert_tool_schema(t) for t in tools] if tools else []
-
-        response = self.client.messages.create(
-            model=self.config.model,
-            max_tokens=self.config.max_tokens,
-            system=system or anthropic.NOT_GIVEN,
-            messages=messages,
-            tools=anthropic_tools or anthropic.NOT_GIVEN,
-        )
-
-        # Handle multi-turn tool loop
         current_messages = list(messages)
-        while response.stop_reason == "tool_use":
+
+        while True:
+            response = self.client.messages.create(
+                model=self.config.model,
+                max_tokens=self.config.max_tokens,
+                system=system or anthropic.NOT_GIVEN,
+                messages=current_messages,
+                tools=anthropic_tools or anthropic.NOT_GIVEN,
+            )
+
+            if response.stop_reason != "tool_use" or self.tool_executor is None:
+                break
+
+            # Extract tool calls from the response
             tool_calls = []
-            tool_use_blocks = []
             for block in response.content:
                 if block.type == "tool_use":
-                    tool_use_blocks.append(block)
                     tool_calls.append(ToolCall(
                         id=block.id,
                         name=block.name,
                         arguments=dict(block.input),
                     ))
 
-            # Append assistant message with tool use blocks
+            logger.debug("Claude tool loop: executing %s", [tc.name for tc in tool_calls])
+
+            # Append assistant tool-use message
             current_messages.append({"role": "assistant", "content": response.content})
 
-            # Caller must provide tool results; since we don't have an executor here,
-            # we break out and return the tool calls for the caller to handle.
-            # But per the plan, ClaudeBackend handles the loop internally once
-            # a ToolExecutor is wired in (Step 19). For now, return partial response.
-            logger.debug("Claude requested tool calls: %s", [tc.name for tc in tool_calls])
-            return LLMResponse(
-                text=None,
-                tool_calls=tool_calls,
-                usage=self._extract_usage(response),
-            )
+            # Execute tools and append results
+            pairs = self.tool_executor.execute_batch(tool_calls, backend="claude")
+            tool_result_content = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tc.id,
+                    "content": result.output if result.success else f"Error: {result.error}",
+                }
+                for tc, result in pairs
+            ]
+            current_messages.append({"role": "user", "content": tool_result_content})
+            logger.debug("Claude tool loop: %d results appended, continuing", len(pairs))
 
         text = None
         for block in response.content:
