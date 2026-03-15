@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from llm.base import ToolCall
+from utils.logger import get_logger
 
 if TYPE_CHECKING:
     from skills.base import Skill
+
+logger = get_logger(__name__)
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful voice assistant. Be concise and clear in your responses."
@@ -13,10 +17,16 @@ DEFAULT_SYSTEM_PROMPT = (
 
 
 class ConversationContext:
-    def __init__(self, max_turns: int, skill: "Skill | None" = None):
+    def __init__(
+        self,
+        max_turns: int,
+        skill: "Skill | None" = None,
+        summarizer: "Callable[[list[dict]], str] | None" = None,
+    ):
         self.max_turns = max_turns
         self._skill: "Skill | None" = skill
         self._history: list[dict] = []
+        self._summarizer = summarizer
 
     # ------------------------------------------------------------------
     # Mutation helpers
@@ -56,38 +66,56 @@ class ConversationContext:
         })
 
     # ------------------------------------------------------------------
-    # Retrieval
+    # Summarization / compression
     # ------------------------------------------------------------------
 
-    def to_messages(self) -> list[dict]:
-        """Return history applying a sliding window by turn count.
+    def _plain_user_turn_indices(self) -> list[int]:
+        """Return indices of plain user messages (turn boundaries) in _history."""
+        return [
+            i for i, msg in enumerate(self._history)
+            if msg["role"] == "user" and not isinstance(msg.get("content"), list)
+        ]
 
-        A "turn" is one user+assistant exchange. We keep the last
-        ``max_turns`` complete exchanges.
+    def _compress_history(self) -> None:
+        """Summarize the oldest messages when turn count exceeds max_turns.
+
+        The oldest half (beyond max_turns) is replaced with a single summary
+        message produced by the injected summarizer callable.
         """
-        # Collect full turn pairs (user → assistant) respecting max_turns.
-        # Walk backwards and count turns.
-        turns: list[list[dict]] = []
-        current_turn: list[dict] = []
+        if self._summarizer is None:
+            return
 
-        for msg in reversed(self._history):
-            current_turn.insert(0, msg)
-            if msg["role"] == "user" and not isinstance(msg.get("content"), list):
-                # A plain user message marks the start of a turn.
-                turns.insert(0, current_turn)
-                current_turn = []
-                if len(turns) >= self.max_turns:
-                    break
+        turn_starts = self._plain_user_turn_indices()
+        if len(turn_starts) <= self.max_turns:
+            return
 
-        # Flatten the retained turns
-        trimmed = [msg for turn in turns for msg in turn]
+        # Keep the last max_turns turns; summarize everything before that.
+        split_idx = turn_starts[-self.max_turns]
+        old_messages = self._history[:split_idx]
+        recent_messages = self._history[split_idx:]
 
-        # If there were trailing tool-call messages not yet part of a full turn,
-        # include them so the conversation remains coherent.
-        if current_turn:
-            trimmed = current_turn + trimmed
+        if not old_messages:
+            return
 
-        return trimmed
+        logger.debug("Compressing %d old messages into a summary.", len(old_messages))
+        try:
+            summary = self._summarizer(old_messages)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Summarization failed (%s); dropping old messages instead.", exc)
+            summary = "Previous conversation history omitted."
+
+        summary_msg = {
+            "role": "user",
+            "content": f"[Conversation summary: {summary}]",
+        }
+        self._history = [summary_msg] + recent_messages
+        logger.info("History compressed: %d messages → 1 summary + %d recent.", len(old_messages), len(recent_messages))
+
+    def to_messages(self) -> list[dict]:
+        """Return history, compressing old turns into a summary if over max_turns."""
+        if self._summarizer:
+            self._compress_history()
+        return list(self._history)
 
     # ------------------------------------------------------------------
     # Skill management

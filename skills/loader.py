@@ -17,7 +17,7 @@ class SkillLoader:
                     name=data["name"],
                     description=data.get("description", ""),
                     system_prompt=data.get("system_prompt", ""),
-                    enabled_tools=data.get("enabled_tools", []),
+                    enabled_tools=data.get("enabled_tools", None),
                     tts_voice=data.get("tts_voice"),
                     ollama_model_override=data.get("ollama_model_override"),
                     always_escalate=data.get("always_escalate", False),

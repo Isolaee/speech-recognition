@@ -45,6 +45,7 @@ class Orchestrator:
         self.context = ConversationContext(
             max_turns=config.agent.history_max_turns,
             skill=initial_skill,
+            summarizer=self._make_summarizer(),
         )
         self._current_skill = initial_skill
 
@@ -78,6 +79,21 @@ class Orchestrator:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _wake_word_detected(self, text: str) -> bool:
+        """Return True if wake word is disabled or found at the start of text."""
+        if not self.config.agent.wake_word_enabled:
+            return True
+        wake = self.config.agent.wake_word.lower()
+        return text.lower().startswith(wake)
+
+    def _strip_wake_word(self, text: str) -> str:
+        """Remove the wake word prefix from text (case-insensitive)."""
+        wake = self.config.agent.wake_word.lower()
+        lower = text.lower()
+        if lower.startswith(wake):
+            return text[len(wake):].lstrip(" ,")
+        return text
+
     def _utterance_source(self) -> Generator[str, None, None]:
         if self.no_voice:
             while True:
@@ -90,9 +106,13 @@ class Orchestrator:
         else:
             for audio in self.audio_input.stream_utterances():
                 text = self.stt.transcribe(audio)
-                if text:
-                    logger.info("Transcribed: %s", text)
-                    yield text
+                if not text:
+                    continue
+                logger.info("Transcribed: %s", text)
+                if not self._wake_word_detected(text):
+                    logger.debug("Wake word not detected; ignoring utterance.")
+                    continue
+                yield self._strip_wake_word(text)
 
     def _handle_utterance(self, text: str) -> None:
         if self._is_skill_switch(text):
@@ -117,6 +137,27 @@ class Orchestrator:
     # ------------------------------------------------------------------
     # Skill management
     # ------------------------------------------------------------------
+
+    def _make_summarizer(self):
+        """Return a callable that summarizes a message list using Ollama."""
+        ollama = self.ollama
+
+        def summarize(messages: list[dict]) -> str:
+            summary_messages = list(messages) + [{
+                "role": "user",
+                "content": (
+                    "Please provide a brief 2-3 sentence summary of the above "
+                    "conversation, capturing the main topics and any important details."
+                ),
+            }]
+            response = ollama.chat(
+                summary_messages,
+                tools=[],
+                system="You are a helpful assistant that summarizes conversations concisely.",
+            )
+            return response.text or "Previous conversation history."
+
+        return summarize
 
     def set_skill(self, name: str) -> None:
         skill = self.skill_loader.load(name)

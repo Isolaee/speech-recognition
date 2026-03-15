@@ -21,7 +21,15 @@ def main() -> None:
         action="store_true",
         help="Print available skill names and exit",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable DEBUG-level logging",
+    )
     args = parser.parse_args()
+
+    from utils.logger import configure_logging
+    configure_logging("DEBUG" if args.debug else None)
 
     from config import load_config
 

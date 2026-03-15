@@ -6,7 +6,7 @@ class Skill:
     name: str
     description: str
     system_prompt: str
-    enabled_tools: list[str]
+    enabled_tools: list[str] | None = None  # None = chatmode (no tools)
     tts_voice: str | None = None
     ollama_model_override: str | None = None
     always_escalate: bool = False

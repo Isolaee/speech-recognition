@@ -37,19 +37,46 @@ class LLMRouter:
         tts: PiperBackend | None = None,
         system: str = "",
     ) -> LLMResponse:
-        enabled_tools = skill.enabled_tools if skill else None
         always_escalate = skill.always_escalate if skill else False
         model_override = skill.ollama_model_override if skill else None
         tts_voice = skill.tts_voice if skill else None
 
+        logger.debug(
+            "Router.chat | skill=%s | always_escalate=%s | messages=%d",
+            skill.name if skill else "none",
+            always_escalate,
+            len(messages),
+        )
+
+        # Determine tool lists.
+        # If skill provides an explicit list, use it. If skill is None (no skill
+        # context), pass None to get_schemas to include all registered tools.
+        # If skill exists but enabled_tools is None, it means chatmode: no tools.
+        if skill is None:
+            # No skill context — expose all registered tools.
+            ollama_tools = self.registry.get_schemas("ollama")
+            claude_tools = self.registry.get_schemas("claude")
+        elif skill.enabled_tools is None:
+            # Chatmode: skill explicitly opts out of tool calling.
+            logger.debug("Skill '%s' is in chatmode (no tools).", skill.name)
+            ollama_tools = []
+            claude_tools = []
+        else:
+            ollama_tools = self.registry.get_schemas("ollama", skill.enabled_tools)
+            claude_tools = self.registry.get_schemas("claude", skill.enabled_tools)
+
+        logger.debug(
+            "Router tools | ollama=%s | claude=%s",
+            [t["name"] for t in ollama_tools],
+            [t["name"] for t in claude_tools],
+        )
+
         # Direct escalation to Claude if the skill demands it
         if always_escalate:
             logger.info("Skill '%s' has always_escalate=True; routing to Claude.", skill.name if skill else "unknown")
-            claude_tools = self.registry.get_schemas("claude", enabled_tools)
             return self.claude.chat(messages, claude_tools, system)
 
         # Try Ollama first
-        ollama_tools = self.registry.get_schemas("ollama", enabled_tools)
         try:
             return self.ollama.chat(messages, ollama_tools, system, model_override=model_override)
         except EscalationRequested as exc:
@@ -61,5 +88,4 @@ class LLMRouter:
                 {"role": "user", "content": exc.refined_prompt},
                 {"role": "user", "content": f"[Context summary: {exc.context_summary}]"},
             ]
-            claude_tools = self.registry.get_schemas("claude", enabled_tools)
             return self.claude.chat(escalation_messages, claude_tools, system)

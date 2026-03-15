@@ -1,7 +1,7 @@
 # LLM settings
 ollama:
   base_url: "http://localhost:11434"
-  model: "llama3.1:8b"
+  model: "qwen2.5:7b"
   temperature: 0.7
   context_window: 8192
 
@@ -35,6 +35,8 @@ agent:
   history_max_turns: 20
   tool_timeout_seconds: 15
   speak_while_streaming: true      # TTS sentence by sentence as LLM streams
+  wake_word: "hey agent"
+  wake_word_enabled: false         # Set to true to require wake word before each utterance
 
 # Escalation settings
 escalation:

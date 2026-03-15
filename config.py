@@ -45,6 +45,8 @@ class AgentConfig(BaseModel):
     history_max_turns: int = 20
     tool_timeout_seconds: int = 15
     speak_while_streaming: bool = True
+    wake_word: str = "hey agent"
+    wake_word_enabled: bool = False
 
 
 class EscalationConfig(BaseModel):

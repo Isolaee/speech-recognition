@@ -25,14 +25,34 @@ class OllamaBackend(LLMBackend):
         full_messages = self._prepend_system(messages, system)
         model = model_override or self.config.model
 
+        tool_names = [t["name"] for t in tools] if tools else []
+        logger.debug(
+            "Ollama chat | model=%s | messages=%d | tools=%s",
+            model,
+            len(full_messages),
+            tool_names or "none (chatmode)",
+        )
+
+        # Wrap flat {name, description, parameters} schemas into the Ollama-expected
+        # {"type": "function", "function": {...}} envelope.
+        ollama_tools = [
+            {"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["parameters"]}}
+            for t in tools
+        ] if tools else None
+
         while True:
             response = self.client.chat(
                 model=model,
                 messages=full_messages,
-                tools=tools or None,
+                tools=ollama_tools,
                 stream=False,
             )
             parsed = self._parse_response(response)
+            logger.debug(
+                "Ollama response | tool_calls=%s | text_len=%s",
+                [tc.name for tc in parsed.tool_calls] or "none",
+                len(parsed.text) if parsed.text else 0,
+            )
 
             if not parsed.tool_calls or self.tool_executor is None:
                 return parsed
