@@ -22,7 +22,9 @@ class PiperBackend:
             audio += chunk.audio_int16_bytes
         return audio
 
-    def speak(self, text: str) -> None:
+    def speak(self, text: str, voice_override: str | None = None) -> None:
+        if voice_override and voice_override != self.config.voice:
+            logger.debug("Voice override '%s' requested but runtime voice switching is not supported; using loaded voice.", voice_override)
         chunks = list(self.voice.synthesize(text))
         if not chunks:
             return

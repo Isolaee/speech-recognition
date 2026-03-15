@@ -8,11 +8,12 @@ class ToolRegistry:
     def register(self, tool: BaseTool) -> None:
         self._tools[tool.name] = tool
 
-    def get_schemas(self, backend: str) -> list[dict]:
+    def get_schemas(self, backend: str, enabled_tools: list[str] | None = None) -> list[dict]:
         return [
             tool.to_schema()
             for tool in self._tools.values()
             if backend in tool.backends
+            and (enabled_tools is None or tool.name in enabled_tools)
         ]
 
     def lookup(self, name: str) -> BaseTool:

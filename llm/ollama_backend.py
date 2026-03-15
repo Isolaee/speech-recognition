@@ -21,12 +21,13 @@ class OllamaBackend(LLMBackend):
         self.client = ollama.Client(host=config.base_url)
         self.tool_executor = tool_executor
 
-    def chat(self, messages: list[dict], tools: list[dict], system: str = "") -> LLMResponse:
+    def chat(self, messages: list[dict], tools: list[dict], system: str = "", model_override: str | None = None) -> LLMResponse:
         full_messages = self._prepend_system(messages, system)
+        model = model_override or self.config.model
 
         while True:
             response = self.client.chat(
-                model=self.config.model,
+                model=model,
                 messages=full_messages,
                 tools=tools or None,
                 stream=False,
