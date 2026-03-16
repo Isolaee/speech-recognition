@@ -24,6 +24,7 @@ import tools.system_info
 import tools.file_ops
 import tools.web_search
 import tools.whatsup
+import tools.stock_market
 
 logger = get_logger(__name__)
 

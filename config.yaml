@@ -54,6 +54,7 @@ tools:
     - calculator
     - system_info
     - escalate_to_claude
+    - stock_market
   claude_enabled:
     - code_executor
     - web_scraper
