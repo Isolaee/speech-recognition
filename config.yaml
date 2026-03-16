@@ -35,8 +35,8 @@ agent:
   history_max_turns: 20
   tool_timeout_seconds: 15
   speak_while_streaming: true      # TTS sentence by sentence as LLM streams
-  wake_word: "hey agent"
-  wake_word_enabled: false         # Set to true to require wake word before each utterance
+  wake_word: "Oracle"
+  wake_word_enabled: true          # Set to true to require wake word before each utterance
 
 # Escalation settings
 escalation:
