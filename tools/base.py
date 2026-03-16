@@ -23,6 +23,7 @@ class BaseTool(ABC):
     description: str
     parameters_schema: dict
     backends: list[str]  # ["ollama"], ["claude"], or ["ollama", "claude"]
+    aliases: list[str] = []  # Alternative names the tool can be looked up by
 
     @abstractmethod
     def execute(self, **kwargs) -> ToolResult: ...

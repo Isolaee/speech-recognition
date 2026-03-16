@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import string
 from collections.abc import Generator
 
 from config import Config
@@ -19,6 +20,7 @@ import tools.time_weather
 import tools.system_info
 import tools.file_ops
 import tools.web_search
+import tools.whatsup
 
 logger = get_logger(__name__)
 
@@ -33,6 +35,7 @@ class Orchestrator:
     def __init__(self, config: Config, no_voice: bool = False):
         self.config = config
         self.no_voice = no_voice
+        self._chat_mode: bool = False  # True = no wake word required
 
         self.skill_loader = SkillLoader("skills/definitions")
 
@@ -79,20 +82,38 @@ class Orchestrator:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _normalize(text: str) -> str:
+        """Lowercase and strip punctuation for fuzzy phrase matching."""
+        return text.lower().translate(str.maketrans("", "", string.punctuation))
+
     def _wake_word_detected(self, text: str) -> bool:
         """Return True if wake word is disabled or found at the start of text."""
         if not self.config.agent.wake_word_enabled:
             return True
-        wake = self.config.agent.wake_word.lower()
-        return text.lower().startswith(wake)
+        wake = self._normalize(self.config.agent.wake_word)
+        return self._normalize(text).startswith(wake)
 
     def _strip_wake_word(self, text: str) -> str:
         """Remove the wake word prefix from text (case-insensitive)."""
-        wake = self.config.agent.wake_word.lower()
-        lower = text.lower()
-        if lower.startswith(wake):
-            return text[len(wake):].lstrip(" ,")
+        wake = self.config.agent.wake_word
+        # Find end of wake word in original text by comparing normalized prefix
+        norm_text = self._normalize(text)
+        norm_wake = self._normalize(wake)
+        if norm_text.startswith(norm_wake):
+            # Walk forward in original text consuming the same number of non-punct chars
+            consumed = 0
+            i = 0
+            while i < len(text) and consumed < len(norm_wake):
+                if text[i] not in string.punctuation and text[i] != " ":
+                    consumed += 1
+                i += 1
+            return text[i:].lstrip(" ,.")
         return text
+
+    def _is_sleep_phrase(self, text: str) -> bool:
+        phrase = self._normalize(self.config.agent.sleep_phrase)
+        return phrase in self._normalize(text)
 
     def _utterance_source(self) -> Generator[str, None, None]:
         if self.no_voice:
@@ -109,12 +130,28 @@ class Orchestrator:
                 if not text:
                     continue
                 logger.info("Transcribed: %s", text)
-                if not self._wake_word_detected(text):
+                if self._chat_mode:
+                    yield text
+                elif self._wake_word_detected(text):
+                    self._chat_mode = True
+                    logger.info("Wake word detected — entering chat mode.")
+                    stripped = self._strip_wake_word(text)
+                    if stripped:
+                        yield stripped
+                else:
                     logger.debug("Wake word not detected; ignoring utterance.")
-                    continue
-                yield self._strip_wake_word(text)
 
     def _handle_utterance(self, text: str) -> None:
+        if self._is_sleep_phrase(text):
+            self._chat_mode = False
+            msg = "Going to sleep. Say the wake word when you need me."
+            logger.info("Sleep command received — exiting chat mode.")
+            if self.no_voice:
+                print(f"Agent: {msg}")
+            elif self.tts:
+                self.tts.speak(msg)
+            return
+
         if self._is_skill_switch(text):
             self._handle_skill_switch(text)
             return
