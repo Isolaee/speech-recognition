@@ -48,6 +48,8 @@ class AgentConfig(BaseModel):
     wake_word: str = "Wake up"
     wake_word_enabled: bool = False
     sleep_phrase: str = "go to sleep"
+    skip_phrase: str = "skip"
+    stop_phrase: str = "stop"
 
 
 class EscalationConfig(BaseModel):

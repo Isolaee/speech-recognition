@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import queue
 import re
 import string
+import threading
+import time
 from collections.abc import Generator
 
 from config import Config
@@ -55,6 +58,7 @@ class Orchestrator:
         self.audio_input = None
         self.stt = None
         self.tts = None
+        self._utterance_queue: queue.Queue[str] = queue.Queue()
 
         if not no_voice:
             from voice.input import AudioInput
@@ -71,9 +75,24 @@ class Orchestrator:
             self.no_voice,
             self._current_skill.name,
         )
+        if not self.no_voice:
+            t = threading.Thread(target=self._audio_capture_loop, daemon=True)
+            t.start()
         try:
-            for text in self._utterance_source():
-                self._handle_utterance(text)
+            while True:
+                if self.no_voice:
+                    try:
+                        text = input("You: ").strip()
+                    except EOFError:
+                        break
+                    if text:
+                        self._handle_utterance(text)
+                else:
+                    try:
+                        text = self._utterance_queue.get(timeout=0.1)
+                        self._handle_utterance(text)
+                    except queue.Empty:
+                        continue
         except KeyboardInterrupt:
             logger.info("Interrupted by user.")
             print("\nGoodbye.")
@@ -115,31 +134,70 @@ class Orchestrator:
         phrase = self._normalize(self.config.agent.sleep_phrase)
         return phrase in self._normalize(text)
 
-    def _utterance_source(self) -> Generator[str, None, None]:
-        if self.no_voice:
-            while True:
-                try:
-                    text = input("You: ").strip()
-                except EOFError:
-                    break
-                if text:
-                    yield text
-        else:
-            for audio in self.audio_input.stream_utterances():
-                text = self.stt.transcribe(audio)
-                if not text:
-                    continue
-                logger.info("Transcribed: %s", text)
-                if self._chat_mode:
-                    yield text
-                elif self._wake_word_detected(text):
-                    self._chat_mode = True
-                    logger.info("Wake word detected — entering chat mode.")
-                    stripped = self._strip_wake_word(text)
-                    if stripped:
-                        yield stripped
+    def _is_skip_phrase(self, text: str) -> bool:
+        phrase = self._normalize(self.config.agent.skip_phrase)
+        return phrase in self._normalize(text)
+
+    def _is_stop_phrase(self, text: str) -> bool:
+        phrase = self._normalize(self.config.agent.stop_phrase)
+        return phrase in self._normalize(text)
+
+    def _speak_with_skip(self, text: str, voice_override: str | None = None) -> None:
+        """Speak text, interruptible mid-playback.
+
+        - skip / stop phrase  → stop TTS, discard utterance, stay in chat mode
+        - any other utterance → stop TTS, re-queue as refinement input
+        """
+        if not self.tts:
+            return
+
+        import sounddevice as sd
+        import numpy as np
+
+        chunks = list(self.tts.voice.synthesize(text))
+        if not chunks:
+            return
+        sample_rate = chunks[0].sample_rate
+        audio = np.concatenate([c.audio_float_array for c in chunks])
+
+        sd.play(audio, samplerate=sample_rate)
+        interrupted = False
+        while sd.get_stream().active:
+            try:
+                heard = self._utterance_queue.get_nowait()
+                sd.stop()
+                interrupted = True
+                if self._is_skip_phrase(heard):
+                    logger.info("Skip — TTS stopped, discarding.")
+                elif self._is_stop_phrase(heard):
+                    logger.info("Stop — TTS stopped, returning to chat mode.")
                 else:
-                    logger.debug("Wake word not detected; ignoring utterance.")
+                    logger.info("Refinement mid-TTS: '%s' — re-queuing.", heard)
+                    self._utterance_queue.put(heard)
+                break
+            except queue.Empty:
+                pass
+            time.sleep(0.05)
+        if not interrupted:
+            sd.wait()
+
+    def _audio_capture_loop(self) -> None:
+        """Background thread: continuously transcribe mic audio into _utterance_queue."""
+        for audio in self.audio_input.stream_utterances():
+            text = self.stt.transcribe(audio)
+            if not text:
+                continue
+            logger.info("Transcribed: %s", text)
+            if self._chat_mode:
+                self._utterance_queue.put(text)
+            elif self._wake_word_detected(text):
+                self._chat_mode = True
+                logger.info("Wake word detected — entering chat mode.")
+                stripped = self._strip_wake_word(text)
+                if stripped:
+                    self._utterance_queue.put(stripped)
+            else:
+                logger.debug("Wake word not detected; ignoring utterance.")
 
     def _handle_utterance(self, text: str) -> None:
         if self._is_sleep_phrase(text):
@@ -148,8 +206,8 @@ class Orchestrator:
             logger.info("Sleep command received — exiting chat mode.")
             if self.no_voice:
                 print(f"Agent: {msg}")
-            elif self.tts:
-                self.tts.speak(msg)
+            else:
+                self._speak_with_skip(msg)
             return
 
         if self._is_skill_switch(text):
@@ -168,8 +226,8 @@ class Orchestrator:
 
         if self.no_voice:
             print(f"Agent: {response_text}")
-        elif self.tts and response_text:
-            self.tts.speak(response_text, voice_override=self._current_skill.tts_voice)
+        elif response_text:
+            self._speak_with_skip(response_text, voice_override=self._current_skill.tts_voice)
 
     # ------------------------------------------------------------------
     # Skill management
@@ -219,6 +277,6 @@ class Orchestrator:
 
                 if self.no_voice:
                     print(f"Agent: {msg}")
-                elif self.tts:
-                    self.tts.speak(msg)
+                else:
+                    self._speak_with_skip(msg)
                 return

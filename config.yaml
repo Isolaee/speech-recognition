@@ -38,6 +38,8 @@ agent:
   wake_word: "wake up"
   wake_word_enabled: true          # Set to true to require wake word before each utterance
   sleep_phrase: "go to sleep"
+  skip_phrase: "skip"
+  stop_phrase: "stop"
 
 # Escalation settings
 escalation:

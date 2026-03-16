@@ -32,3 +32,7 @@ class PiperBackend:
         audio = np.concatenate([c.audio_float_array for c in chunks])
         sd.play(audio, samplerate=sample_rate)
         sd.wait()
+
+    def stop(self) -> None:
+        """Interrupt any currently playing audio."""
+        sd.stop()
