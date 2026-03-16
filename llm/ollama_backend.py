@@ -98,53 +98,43 @@ class OllamaBackend(LLMBackend):
             for t in tools
         ] if tools else None
 
+        # Handle tool-call rounds non-streaming (reliable tool_calls parsing),
+        # then stream only the final text response for TTS.
         for _round in range(self.MAX_TOOL_ROUNDS):
-            stream = self.client.chat(
+            response = self.client.chat(
                 model=model,
                 messages=full_messages,
                 tools=ollama_tools,
-                stream=True,
+                stream=False,
             )
+            parsed = self._parse_response(response)
 
-            accumulated_text = ""
-            last_chunk = None
-            for chunk in stream:
-                last_chunk = chunk
-                content = chunk.message.content
-                if content:
-                    accumulated_text += content
-                    yield content
-
-            if last_chunk is None or not last_chunk.message.tool_calls or self.tool_executor is None:
+            if not parsed.tool_calls or self.tool_executor is None:
+                # No more tool calls — re-issue as streaming for TTS.
+                if parsed.text:
+                    # Already have the text; stream it out in one shot.
+                    yield parsed.text
                 return
 
-            tool_calls = [
-                ToolCall(
-                    id=str(id(tc)),
-                    name=tc.function.name,
-                    arguments=dict(tc.function.arguments),
-                )
-                for tc in last_chunk.message.tool_calls
-            ]
-            logger.debug("stream_chat tool calls: %s", [tc.name for tc in tool_calls])
+            logger.debug("stream_chat tool calls: %s", [tc.name for tc in parsed.tool_calls])
 
             full_messages.append({
                 "role": "assistant",
-                "content": accumulated_text,
+                "content": response.message.content or "",
                 "tool_calls": [
                     {"function": {"name": tc.name, "arguments": tc.arguments}}
-                    for tc in tool_calls
+                    for tc in parsed.tool_calls
                 ],
             })
 
-            pairs = self.tool_executor.execute_batch(tool_calls, backend="ollama")
+            pairs = self.tool_executor.execute_batch(parsed.tool_calls, backend="ollama")
             for tc, result in pairs:
                 full_messages.append({
                     "role": "tool",
                     "content": result.output if result.success else f"Error: {result.error}",
                 })
 
-        # Exhausted tool rounds — force a text-only reply.
+        # Exhausted tool rounds — force a text-only streamed reply.
         logger.warning("stream_chat hit MAX_TOOL_ROUNDS (%d); forcing text-only reply.", self.MAX_TOOL_ROUNDS)
         stream = self.client.chat(model=model, messages=full_messages, tools=None, stream=True)
         for chunk in stream:

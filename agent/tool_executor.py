@@ -17,25 +17,26 @@ class ToolExecutor:
         self, tool_calls: list[ToolCall], backend: str = "ollama"
     ) -> list[tuple[ToolCall, ToolResult]]:
         results = []
-        with ThreadPoolExecutor() as executor:
-            futures = {
-                executor.submit(self._run, tc, backend): tc
-                for tc in tool_calls
-            }
-            for future, tc in futures.items():
-                try:
-                    result = future.result(timeout=self.timeout)
-                except FuturesTimeoutError:
-                    logger.warning("Tool '%s' timed out after %ss", tc.name, self.timeout)
-                    result = ToolResult(
-                        success=False,
-                        output="",
-                        error=f"Tool timed out after {self.timeout} seconds",
-                    )
-                except Exception as e:
-                    logger.error("Tool '%s' raised unexpected error: %s", tc.name, e)
-                    result = ToolResult(success=False, output="", error=str(e))
-                results.append((tc, result))
+        executor = ThreadPoolExecutor()
+        futures = {
+            executor.submit(self._run, tc, backend): tc
+            for tc in tool_calls
+        }
+        for future, tc in futures.items():
+            try:
+                result = future.result(timeout=self.timeout)
+            except FuturesTimeoutError:
+                logger.warning("Tool '%s' timed out after %ss", tc.name, self.timeout)
+                result = ToolResult(
+                    success=False,
+                    output="",
+                    error=f"Tool timed out after {self.timeout} seconds",
+                )
+            except Exception as e:
+                logger.error("Tool '%s' raised unexpected error: %s", tc.name, e)
+                result = ToolResult(success=False, output="", error=str(e))
+            results.append((tc, result))
+        executor.shutdown(wait=False, cancel_futures=True)
         return results
 
     def _run(self, tc: ToolCall, backend: str) -> ToolResult:
