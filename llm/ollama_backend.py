@@ -21,6 +21,8 @@ class OllamaBackend(LLMBackend):
         self.client = ollama.Client(host=config.base_url)
         self.tool_executor = tool_executor
 
+    MAX_TOOL_ROUNDS = 5
+
     def chat(self, messages: list[dict], tools: list[dict], system: str = "", model_override: str | None = None) -> LLMResponse:
         full_messages = self._prepend_system(messages, system)
         model = model_override or self.config.model
@@ -40,7 +42,7 @@ class OllamaBackend(LLMBackend):
             for t in tools
         ] if tools else None
 
-        while True:
+        for _round in range(self.MAX_TOOL_ROUNDS):
             response = self.client.chat(
                 model=model,
                 messages=full_messages,
@@ -82,18 +84,72 @@ class OllamaBackend(LLMBackend):
 
             logger.debug("Tool loop: appended %d results, continuing", len(pairs))
 
-    def stream_chat(self, messages: list[dict], tools: list[dict], system: str = "") -> Generator[str, None, None]:
+        # Exhausted tool rounds — do a final call with tools disabled to force a text reply.
+        logger.warning("Hit MAX_TOOL_ROUNDS (%d); forcing text-only reply.", self.MAX_TOOL_ROUNDS)
+        response = self.client.chat(model=model, messages=full_messages, tools=None, stream=False)
+        return self._parse_response(response)
+
+    def stream_chat(self, messages: list[dict], tools: list[dict], system: str = "", model_override: str | None = None) -> Generator[str, None, None]:
         full_messages = self._prepend_system(messages, system)
-        stream = self.client.chat(
-            model=self.config.model,
-            messages=full_messages,
-            tools=tools or None,
-            stream=True,
-        )
+        model = model_override or self.config.model
+
+        ollama_tools = [
+            {"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["parameters"]}}
+            for t in tools
+        ] if tools else None
+
+        for _round in range(self.MAX_TOOL_ROUNDS):
+            stream = self.client.chat(
+                model=model,
+                messages=full_messages,
+                tools=ollama_tools,
+                stream=True,
+            )
+
+            accumulated_text = ""
+            last_chunk = None
+            for chunk in stream:
+                last_chunk = chunk
+                content = chunk.message.content
+                if content:
+                    accumulated_text += content
+                    yield content
+
+            if last_chunk is None or not last_chunk.message.tool_calls or self.tool_executor is None:
+                return
+
+            tool_calls = [
+                ToolCall(
+                    id=str(id(tc)),
+                    name=tc.function.name,
+                    arguments=dict(tc.function.arguments),
+                )
+                for tc in last_chunk.message.tool_calls
+            ]
+            logger.debug("stream_chat tool calls: %s", [tc.name for tc in tool_calls])
+
+            full_messages.append({
+                "role": "assistant",
+                "content": accumulated_text,
+                "tool_calls": [
+                    {"function": {"name": tc.name, "arguments": tc.arguments}}
+                    for tc in tool_calls
+                ],
+            })
+
+            pairs = self.tool_executor.execute_batch(tool_calls, backend="ollama")
+            for tc, result in pairs:
+                full_messages.append({
+                    "role": "tool",
+                    "content": result.output if result.success else f"Error: {result.error}",
+                })
+
+        # Exhausted tool rounds — force a text-only reply.
+        logger.warning("stream_chat hit MAX_TOOL_ROUNDS (%d); forcing text-only reply.", self.MAX_TOOL_ROUNDS)
+        stream = self.client.chat(model=model, messages=full_messages, tools=None, stream=True)
         for chunk in stream:
-            content = chunk.message.content
-            if content:
-                yield content
+            if chunk.message.content:
+                yield chunk.message.content
 
     def _prepend_system(self, messages: list[dict], system: str) -> list[dict]:
         if not system:

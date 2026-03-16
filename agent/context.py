@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -27,6 +28,7 @@ class ConversationContext:
         self._skill: "Skill | None" = skill
         self._history: list[dict] = []
         self._summarizer = summarizer
+        self._summarizing = False
 
     # ------------------------------------------------------------------
     # Mutation helpers
@@ -79,17 +81,16 @@ class ConversationContext:
     def _compress_history(self) -> None:
         """Summarize the oldest messages when turn count exceeds max_turns.
 
-        The oldest half (beyond max_turns) is replaced with a single summary
-        message produced by the injected summarizer callable.
+        Old messages are replaced immediately with a placeholder; the actual
+        summarization runs in a background thread so it never blocks a response.
         """
-        if self._summarizer is None:
+        if self._summarizer is None or self._summarizing:
             return
 
         turn_starts = self._plain_user_turn_indices()
         if len(turn_starts) <= self.max_turns:
             return
 
-        # Keep the last max_turns turns; summarize everything before that.
         split_idx = turn_starts[-self.max_turns]
         old_messages = self._history[:split_idx]
         recent_messages = self._history[split_idx:]
@@ -97,19 +98,28 @@ class ConversationContext:
         if not old_messages:
             return
 
-        logger.debug("Compressing %d old messages into a summary.", len(old_messages))
-        try:
-            summary = self._summarizer(old_messages)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Summarization failed (%s); dropping old messages instead.", exc)
-            summary = "Previous conversation history omitted."
+        # Replace old messages immediately with a placeholder so future calls
+        # don't re-trigger compression while the thread is running.
+        placeholder = {"role": "user", "content": "[Summarizing previous conversation...]"}
+        self._history = [placeholder] + recent_messages
+        self._summarizing = True
+        logger.debug("Spawning background summarization for %d old messages.", len(old_messages))
 
-        summary_msg = {
-            "role": "user",
-            "content": f"[Conversation summary: {summary}]",
-        }
-        self._history = [summary_msg] + recent_messages
-        logger.info("History compressed: %d messages → 1 summary + %d recent.", len(old_messages), len(recent_messages))
+        def _run() -> None:
+            try:
+                summary = self._summarizer(old_messages)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Summarization failed (%s); using fallback.", exc)
+                summary = "Previous conversation history omitted."
+
+            summary_msg = {"role": "user", "content": f"[Conversation summary: {summary}]"}
+            # Swap placeholder for real summary (identity check is safe here)
+            if self._history and self._history[0] is placeholder:
+                self._history[0] = summary_msg
+            self._summarizing = False
+            logger.info("Background summarization complete.")
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def to_messages(self) -> list[dict]:
         """Return history, compressing old turns into a summary if over max_turns."""

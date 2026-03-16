@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Generator
 from typing import TYPE_CHECKING
 
 from config import EscalationConfig
@@ -89,3 +90,40 @@ class LLMRouter:
                 {"role": "user", "content": f"[Context summary: {exc.context_summary}]"},
             ]
             return self.claude.chat(escalation_messages, claude_tools, system)
+
+    def stream_chat(
+        self,
+        messages: list[dict],
+        skill: Skill | None,
+        system: str = "",
+    ) -> Generator[str, None, None]:
+        always_escalate = skill.always_escalate if skill else False
+        model_override = skill.ollama_model_override if skill else None
+
+        if skill is None:
+            ollama_tools = self.registry.get_schemas("ollama")
+            claude_tools = self.registry.get_schemas("claude")
+        elif skill.enabled_tools is None:
+            ollama_tools = []
+            claude_tools = []
+        else:
+            ollama_tools = self.registry.get_schemas("ollama", skill.enabled_tools)
+            claude_tools = self.registry.get_schemas("claude", skill.enabled_tools)
+
+        if always_escalate:
+            response = self.claude.chat(messages, claude_tools, system)
+            if response.text:
+                yield response.text
+            return
+
+        try:
+            yield from self.ollama.stream_chat(messages, ollama_tools, system, model_override=model_override)
+        except EscalationRequested as exc:
+            logger.info("Escalating to Claude (stream): %s", exc.reason)
+            escalation_messages = [
+                {"role": "user", "content": exc.refined_prompt},
+                {"role": "user", "content": f"[Context summary: {exc.context_summary}]"},
+            ]
+            response = self.claude.chat(escalation_messages, claude_tools, system)
+            if response.text:
+                yield response.text

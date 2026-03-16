@@ -142,6 +142,83 @@ class Orchestrator:
         phrase = self._normalize(self.config.agent.stop_phrase)
         return phrase in self._normalize(text)
 
+    def _speak_sentences_from_stream(self, gen: Generator[str, None, None], voice_override: str | None = None) -> str:
+        """Consume a streaming text generator, speaking each sentence as it completes.
+
+        Synthesis of sentence N+1 runs in a background thread while sentence N plays,
+        so the gap between sentences is near-zero.
+        """
+        import numpy as np
+        import sounddevice as sd
+        from concurrent.futures import Future, ThreadPoolExecutor
+
+        full_text = ""
+        buffer = ""
+        _sentence_end = re.compile(r"[.!?]\s")
+
+        executor = ThreadPoolExecutor(max_workers=1)
+
+        def _synthesize(text: str) -> tuple:
+            chunks = list(self.tts.voice.synthesize(text))
+            if not chunks:
+                return None, None
+            return np.concatenate([c.audio_float_array for c in chunks]), chunks[0].sample_rate
+
+        def _play(audio, rate: int) -> bool:
+            """Play audio. Returns False if user interrupted."""
+            sd.play(audio, samplerate=rate)
+            while sd.get_stream().active:
+                try:
+                    heard = self._utterance_queue.get_nowait()
+                    sd.stop()
+                    if not self._is_skip_phrase(heard) and not self._is_stop_phrase(heard):
+                        self._utterance_queue.put(heard)
+                    return False
+                except queue.Empty:
+                    pass
+                time.sleep(0.05)
+            sd.wait()
+            return True
+
+        pending: Future | None = None
+        interrupted = False
+
+        def queue_sentence(sentence: str) -> bool:
+            """Submit synthesis for sentence; play the previously queued one. Returns False if interrupted."""
+            nonlocal pending
+            future = executor.submit(_synthesize, sentence)
+            if pending is not None:
+                audio, rate = pending.result()
+                if audio is not None and not _play(audio, rate):
+                    pending = future
+                    return False
+            pending = future
+            return True
+
+        for chunk in gen:
+            full_text += chunk
+            buffer += chunk
+            while True:
+                m = _sentence_end.search(buffer)
+                if not m:
+                    break
+                sentence = buffer[:m.end() - 1].strip()
+                buffer = buffer[m.end():]
+                if sentence and not interrupted:
+                    if not queue_sentence(sentence):
+                        interrupted = True
+
+        if buffer.strip() and not interrupted:
+            queue_sentence(buffer.strip())
+
+        if pending is not None and not interrupted:
+            audio, rate = pending.result()
+            if audio is not None:
+                _play(audio, rate)
+
+        executor.shutdown(wait=False)
+        return full_text
+
     def _speak_with_skip(self, text: str, voice_override: str | None = None) -> None:
         """Speak text, interruptible mid-playback.
 
@@ -215,19 +292,25 @@ class Orchestrator:
             return
 
         self.context.add_user(text)
-        response = self.router.chat(
-            messages=self.context.to_messages(),
-            skill=self._current_skill,
-            tts=self.tts,
-            system=self.context.system_prompt,
-        )
-        response_text = response.text or ""
-        self.context.add_assistant(response_text)
 
         if self.no_voice:
+            response = self.router.chat(
+                messages=self.context.to_messages(),
+                skill=self._current_skill,
+                tts=self.tts,
+                system=self.context.system_prompt,
+            )
+            response_text = response.text or ""
+            self.context.add_assistant(response_text)
             print(f"Agent: {response_text}")
-        elif response_text:
-            self._speak_with_skip(response_text, voice_override=self._current_skill.tts_voice)
+        else:
+            gen = self.router.stream_chat(
+                messages=self.context.to_messages(),
+                skill=self._current_skill,
+                system=self.context.system_prompt,
+            )
+            response_text = self._speak_sentences_from_stream(gen, voice_override=self._current_skill.tts_voice)
+            self.context.add_assistant(response_text)
 
     # ------------------------------------------------------------------
     # Skill management
