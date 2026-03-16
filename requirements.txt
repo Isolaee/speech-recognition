@@ -16,7 +16,7 @@ ollama>=0.3.0            # Ollama Python SDK
 anthropic>=0.30.0        # Claude API SDK
 
 # Tools
-duckduckgo-search>=6.0.0 # web search
+ddgs>=9.0.0              # web search
 httpx>=0.27.0            # HTTP client
 beautifulsoup4>=4.12.0   # web scraping
 simpleeval>=0.9.13       # safe math expression evaluator
