@@ -25,6 +25,7 @@ import tools.file_ops
 import tools.web_search
 import tools.whatsup
 import tools.stock_market
+import tools.text_editor
 
 logger = get_logger(__name__)
 
